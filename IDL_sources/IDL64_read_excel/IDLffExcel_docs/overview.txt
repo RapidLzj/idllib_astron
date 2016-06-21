@@ -1,0 +1,2 @@
+The following object interface contains functionality for IDL 6.4 and greater to read directly from Microsoft
+.xls files.

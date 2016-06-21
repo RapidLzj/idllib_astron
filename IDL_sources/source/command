@@ -1,0 +1,1 @@
+ plot,sources.psf_flux,(1.124*sources.aper_flux-sources.psf_flux)/sources.psf_flux,psym=4,/xlog,xrange=[1,10000],yrange=[-2,2],xstyle=1,ystyle=1

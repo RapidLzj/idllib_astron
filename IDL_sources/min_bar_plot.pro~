@@ -1,0 +1,15 @@
+@/home/fang/disk1/fang/IDL_sources/remove_zero
+
+pro min_bar_plot,array,Vmin,Vmax,binsize,xcen=xcen,bar=bar,color=color,outline=outline
+     barnum=(vmax-vmin)/binsize+1
+     xcen0=vmin+findgen(barnum)*binsize+binsize/2.
+     xcen=xcen0
+     barnames=remove_zero(xcen0)
+     bar0=histogram(array,min=vmin,max=vmax,binsize=binsize)
+     bar=bar0
+     colors=replicate(color,barnum)
+     yran=!y.range
+     !y.range=[0,max(bar0)+max(bar0)*0.1]     
+     bar_plot,bar0,barnames=barnames,color=colors,outline=outline 
+     !y.range=yran
+end

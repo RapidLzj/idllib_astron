@@ -1,0 +1,11 @@
+@kstwo.pro
+pro test
+data1=randomn(10,100)+1
+data2=randomn(-20,300)+1.2
+kstwo,data1,data2,D,prob
+print,D,prob 
+
+end
+
+ 
+

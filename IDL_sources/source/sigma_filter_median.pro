@@ -1,0 +1,56 @@
+pro sigma_filter_median,array,stack,outarray,Nsigma=Nsigma,Times=Times
+
+if not keyword_set(Nsigma) then Nsigma=3.0
+if not keyword_set(Times) then Times=1
+
+ss=size(array,/dimension)
+
+if n_elements(ss) ne 3 then print,'Array must have  3 dimensions'
+
+nx=ss[0]
+ny=ss[1]
+nz=ss[2]
+
+stack=median(array,dimension=3)
+
+
+
+for i=0,Times-1 do begin
+
+imstd=fltarr(nx,ny)
+cover=fltarr(nx,ny)
+	
+	
+	;;;;;;;;;;;;;;;;;;;;;calculate stddev for each pixel;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	for imosaic=0,nz-1 do begin
+          imi=array[*,*,imosaic]
+          ix=where(finite(imi) eq 1)
+	  imstd[ix]=(imi[ix]-stack[ix])^2.0
+	  cover[ix]=cover[ix]+1.0
+        endfor	
+
+	  imstd=sqrt(imstd/cover)
+	
+	;;;;;;;;;;;;;;;;;;;;;;;calculate good array for each pixel on each image;;;;;;;;;;;;;;;
+	
+        one={good:fltarr(nx,ny)}
+        one.good=!VALUES.F_NAN
+        good_cube=replicate(one,nz)
+       
+	low=stack-Nsigma*imstd
+	 up=stack+Nsigma*imstd
+	  
+	for imosaic=0,nz-1 do begin
+          imi=array[*,*,imosaic]
+	  ix=where((finite(imi) eq 1) and (imi ge low) and (imi le up))   
+	  good_cube[imosaic].good[ix]=1.0
+	  array[*,*,imosaic]=array[*,*,imosaic]*good_cube[imosaic].good
+	endfor	
+
+	stack=median(array,dimension=3,/even) 
+       
+
+endfor
+  
+  outarray=array
+end

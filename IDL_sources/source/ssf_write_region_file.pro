@@ -1,0 +1,28 @@
+pro ssf_write_region_file,new,fitsname,regname=regname,boxsize=boxsize,overlap=overlap,buffer=buffer
+  a=strsplit(fitsname,'.fits',/reg,/ex)
+  regname=a[0]
+  if not keyword_set(buffer) then buffer=0
+  if keyword_set(boxsize) then regname=regname+'_bs'+strtrim(string(boxsize-2*buffer),2)
+  if keyword_set(overlap) then regname=regname+'ov'+strtrim(string(overlap-2*buffer),2)
+  regname=regname+'.reg'
+
+  off=1. ;; offset to be added to x and y coordinates, typically 1.0 for stuff that has been extracted using idl, 0. for iraf/sextractor stuff.
+
+  bs=5
+  openw,lun,regname,/get_lun
+  j=0l
+  while (j le (n_elements(new)-1)) do begin
+;    adxy, hdrmos,res[j].RA,res[j].dec, x, y
+    line='box('+strtrim(string(new[j].x+off,format='(f10.1)'),2)+','+$
+                strtrim(string(new[j].y+off,format='(f10.1)'),2)+','+$
+                strtrim(string(bs,format='(f10.1)'),2)+','+$
+                strtrim(string(bs,format='(f10.1)'),2)+') # color=green'
+    if ((finite(new[j].x) eq 1) and (finite(new[j].y) eq 1)) then $
+    printf,lun,line
+    j=j+1
+  endwhile
+  close,lun
+  free_lun,lun
+  print,'wrote: ',regname
+end
+

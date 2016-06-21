@@ -1,0 +1,508 @@
+function jm_rgb,r,g,b
+  result=1l*r+256l*g+256l^2*b
+  return,result
+end
+
+function jm_cut_indx,indx,n
+;; leaves only every nth element in vector indx
+  ntot=n_elements(indx)
+  nnew=1l*floor(1.*ntot/(1.*n))
+  indx_new=lonarr(nnew)
+  i=0l
+  while i lt (nnew-1) do begin
+    indx_new[i]=indx[i*n]
+;    print,indx[i*n],i*n,indx_new[i]
+    i=i+1
+  endwhile
+
+  return,indx_new
+end
+
+function jm_get_times,cube
+  times=dblarr(n_elements(cube))
+  for i=0,n_elements(times)-1 do begin
+    timestring=sxpar(cube[i].hdr,'DATE_OBS')
+
+    a=strsplit(timestring,'T',/ex)
+    b=strsplit(a[0],'-',/ex)
+    yr=b[0] & mn=b[1] & day=b[2]
+    c=strsplit(a[1],':',/ex)
+    hr=c[0]+c[1]/60.+c[2]/3600.
+
+    JDCNV, YR, MN, DAY, HR, JULIAN
+    times[i]=julian
+  endfor
+  return,times
+end
+
+function jm_determine_type,filename,Tint=Tint
+  if (strpos(filename,'munc') ne -1) then type='uncertainty'
+  if (strpos(filename,'mcov') ne -1) then type='coverage'
+  if (strpos(filename,'maic') ne -1) then type='image'
+  Tint=10.4 ;; seconds
+  if ((strpos(filename,'muncs') ne -1) or $
+      (strpos(filename,'mcovs') ne -1) or $
+      (strpos(filename,'maics') ne -1)) then Tint=0.4
+  return,type
+end
+
+function jm_get_band,i
+  bands=['3.6','4.5','5.8','8.0']
+  return,bands[i-1]
+end
+
+function jm_inventorize,data_directory
+  spawn,'pwd',current_dir
+  cd,data_directory
+  spawn,'find . -name \*.fits',list
+  cd,current_dir
+  list=data_directory+list
+
+  for i=0,n_elements(list)-1 do begin
+    hdr=headfits(list[i])
+    OBJECT=sxpar(hdr,'OBJECT')
+    DATE_OBS=sxpar(hdr,'DATE_OBS')
+    AORLABEL=sxpar(hdr,'AORLABEL')
+    NAXIS1=sxpar(hdr,'NAXIS1')
+    NAXIS2=sxpar(hdr,'NAXIS2')
+    band=jm_get_band(sxpar(hdr,'chnlnum'))
+
+    type=jm_determine_type(list[i],Tint=Tint)
+    RA=double(sxpar(hdr,'CRVAL1'))
+    dec=double(sxpar(hdr,'CRVAL2'))
+    if (dec ge -1.) then field='L1630' else field='L1641'
+    units=sxpar(hdr,'BUNIT')
+
+    one={FIELD:FIELD,DATE_OBS:DATE_OBS,OBJECT:OBJECT,AORLABEL:AORLABEL,$
+         band:band,type:type,Tint:Tint,NAXIS1:NAXIS1,NAXIS2:NAXIS2,$
+         FILE:list[i],RA:RA,dec:dec,units:units}
+    if (i eq 0) then inv=one else inv=[inv,one]
+  endfor
+
+  return,inv
+end
+
+function jm_getpairs,headers
+;; The observations were not all done at the same time. Instead, 4 "pairs"
+;; of scans were performed, with weeks of months in between the pairs.
+;; Each pair covers the whole field once (with overlap, so some parts are
+;; covered twice in each pair).
+  nhead=n_elements(headers[0,*])
+  dates=strarr(nhead)
+  for i=0,nhead-1 do dates[i]=sxpar(reform(headers[*,i]),'DATE_OBS')
+  order=sort(dates)
+
+  one={obs1:-1,obs2:-1}
+  pairs=replicate(one,nhead/2)
+
+  for i=0,n_elements(pairs)-1 do begin
+    pairs[i].obs1=order[2*i]
+    pairs[i].obs2=order[2*i+1]
+  endfor
+  return,pairs
+end
+
+
+pro join_mosaics,data_directory=data_directory,work_directory=work_directory,$
+                 field=field
+;; Purpose: to make joined mosaics from the individual sub-mosaics that
+;; were provided by the Spitzer Science Center.
+;;
+;; We have "long" (10.4s) and "short" (0.4s) exposures
+;;
+;; We have 3 sorts of files:  
+;;   blabla.maic.fits  --> the images
+;;   blabla.munc.fits  --> the uncertainties (for each pixel)
+;;   blabla.mcov.fits  --> how many original pixels were in this mosaic-pixel
+;;                         (the mosaics have already been rebiined)
+;;
+;; (these are for the long exposures, the files for the short exposures
+;; are end on .maics.fits, .muncs.fits, and .mcovs.fits, respectively).
+;;
+;;
+;; To join the mosaics, several steps are needed:
+;;
+;;   1) apply an additive offset to correct for the varying (zodaical?)
+;;      background. Mainly important for the 5.8 and 8.0 micron bands.
+;;      In practice, we will just "align" everything to the first image.
+;;      This leaves the mosaics with an residual additive background,
+;;      which does not influence the photometry, however.
+;;
+;;   2) rebin the mosaics on a common pixel grid.
+;;      Put the mosaics (8 per field for each band) in a data cube 
+;;      of [nx,ny,8] pixels and run a siga-clipping procedure, in order 
+;;      to remove cosmic ray hits.
+;;      Generate an [nx,ny,8] integer array ("goodpix"), in which each 
+;;      element has value 1 or 0. Value 1 if the pixel contains data and
+;;      has no cosmic, Value 0 if the pixel contains no data or has a cosmic
+;;      ray in it.
+;;
+;;   3) Perform a weighted average for each image pixel [ix,iy,*], using the
+;;      the values of the uncertainty map (1./uncertainty) as weights.
+;;      Of course include only the pixels with value 1 in goodpix.
+;;
+;;   4) make also joint mosaics for the uncertainties.
+
+;; ATTENTION: STEP 2+3 ARE NOW DONE IN A SIMPLIFIED WAY (we just take the
+;; median). THIS NEEDS TO BE IMPROVED!!
+
+
+  inv=jm_inventorize(data_directory)
+
+   bands=['3.6','4.5','5.8','8.0']
+
+   Tint=[0.4,10.4]
+
+;    Tint=[0.4]
+  first=1 ;; if set to 1, the fits files are read, aligned and put in a cube.
+          ;; the cube is saved. If set to 0, the cube is restored.
+
+  individual_mosaics=0 ;; If set to 0, we take all images, apply a background offset and 
+  ;; make 1 mosaic. If set to 1, we make pairwise mosaics (4 in total),
+  ;; without any re-scaling.
+
+
+  ;; First, we read all data, put them on a common spatial grid and
+  ;; make data cubes.
+  if keyword_set(first) then begin
+    for iband=0,n_elements(bands)-1 do begin
+      for iTint=0,n_elements(Tint)-1 do begin
+      
+;;;;;;;;;;;;;;;;;;;;;;;;;create array cube for images;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    
+        
+	ix=where((inv.field eq field) and (inv.band eq bands[iband]) and $
+                 (inv.Tint eq Tint[iTint]) and (inv.type eq 'image'))
+        linv=inv[ix] ;; "little" inv
+      
+      
+      
+      
+      
+      
+        for j=0,n_elements(linv)-1 do begin
+
+        ;; we are going to align everything with the astrometry of the
+        ;; first image at 3.6 micron, short exposure
+          if ((j eq 0) and (bands[iband] eq '3.6') and (Tint[iTint] eq 0.4)) then begin
+            if (field eq 'L1641') then begin
+              basefile=0
+               nx=10200
+               ny=2600
+               angle=128.
+               xoffset=0.
+              yoffset=0.
+	   
+            endif
+
+            if (field eq 'L1630') then begin
+              basefile=0
+              nx=2500
+              ny=4500
+              angle=0.
+              xoffset=0.
+              yoffset=0.
+	    
+            endif
+
+            hdr=headfits(linv[0].file)
+	    
+	    
+            hdr=[hdr,'','','',''] ;; reserve a couple of extra spaces
+
+            one={hdr:hdr,im:fltarr(nx,ny)}
+            cube=replicate(one,n_elements(linv))
+        
+            ;; get the astrometry of the first file
+            extast,hdr,astrmos,noparams
+            astrmos.crpix=[nx/2,ny/2]
+            hdrmos=hdr
+            putast,hdrmos, astrmos
+
+            FXADDPAR, hdrmos, 'NAXIS1', nx, 'Pixel in X'
+            FXADDPAR, hdrmos, 'NAXIS2', ny, 'Pixel in Y'
+            FXADDPAR, hdrmos, 'CROTA2', angle,'[deg] Position angle of axis 2 (W of N, +=CW)'
+
+             if ((xoffset ne 0.) or (yoffset ne 0.)) then begin
+              CRPIX1=sxpar(hdrmos,'CRPIX1')
+              CRPIX2=sxpar(hdrmos,'CRPIX2')
+              newCRPIX1=CRPIX1+xoffset
+              newCRPIX2=CRPIX2+yoffset
+              xyad,hdrmos,newCRPIX1,newCRPIX2,newCRVAL1,newCRVAL2
+              FXADDPAR,hdrmos,'CRVAL1',newCRVAL1,'[deg] RA at CRPIX1,CRPIX2'
+              FXADDPAR,hdrmos,'CRVAL2',newCRVAL2,'[deg] dec at CRPIX1,CRPIX2'
+            endif
+          endif
+
+          print,'aligning mosaic ',j
+          im=1.0*readfits(linv[j].file,hdr)
+     
+          missing=!values.F_nan
+          ;;cubic=-0.5 & interp=2
+          hastrom,im,hdr,imb,hdrb,hdrmos,MISSING=missing, INTERP = interp, $
+               ERRMSG = errmsg,CUBIC = cubic, DEGREE = Degree, NGRID = Ngrid
+          cube[j].hdr=hdrb
+          cube[j].im=imb
+        endfor
+
+        if (Tint[iTint] eq 0.4) then shortlong='_short'
+        if (Tint[iTint] eq 10.4) then shortlong='_long'
+
+        outfile=work_directory+'joined_IRAC_mosaics/cubes/'+field+'_'+bands[iband]+$
+                  '_cube'+shortlong+'.dat'
+        save,cube,filename=outfile
+        print,'wrote: ',outfile
+    
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;create uncertainty cube for images;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    
+        
+	ix=where((inv.field eq field) and (inv.band eq bands[iband]) and $
+                 (inv.Tint eq Tint[iTint]) and (inv.type eq 'uncertainty'))
+        linv=inv[ix] ;; "little" inv
+        
+	hdr=headfits(linv[0].file)
+        FXADDPAR,hdr,'EQUINOX','2000.','Equinox for ICRS celestial coord. system '  	    
+	
+	hdr=[hdr,'','','',''] ;; reserve a couple of extra spaces
+	one={hdr:hdr,im:fltarr(nx,ny)}
+	unc_cube=replicate(one,n_elements(linv))
+	
+        for j=0,n_elements(linv)-1 do begin
+          print,'aligning mosaic ',j
+          im=1.0*readfits(linv[j].file,hdr)
+	  FXADDPAR,hdr,'EQUINOX','2000.','Equinox for ICRS celestial coord. system '
+	   
+	  missing=!values.F_nan
+          ;;cubic=-0.5 & interp=2
+         
+	
+	  hastrom,im,hdr,imb,hdrb,hdrmos,MISSING=missing, INTERP = interp, $
+               ERRMSG = errmsg,CUBIC = cubic, DEGREE = Degree, NGRID = Ngrid
+          unc_cube[j].hdr=hdrb
+          unc_cube[j].im=imb
+          
+        endfor
+
+        if (Tint[iTint] eq 0.4) then shortlong='_short'
+        if (Tint[iTint] eq 10.4) then shortlong='_long'
+
+        outfile=work_directory+'joined_IRAC_mosaics/cubes/'+field+'_'+bands[iband]+$
+                  '_unc_cube'+shortlong+'.dat'
+        save,unc_cube,filename=outfile
+        print,'wrote: ',outfile
+    
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;create coverage cube for images;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    
+        
+	ix=where((inv.field eq field) and (inv.band eq bands[iband]) and $
+                 (inv.Tint eq Tint[iTint]) and (inv.type eq 'coverage'))
+        linv=inv[ix] ;; "little" inv
+        
+	hdr=headfits(linv[0].file)
+        ;FXADDPAR,hdr,'EQUINOX','2000.','Equinox for ICRS celestial coord. system '  	    
+	
+	hdr=[hdr,'','','',''] ;; reserve a couple of extra spaces
+	one={hdr:hdr,im:fltarr(nx,ny)}
+	cov_cube=replicate(one,n_elements(linv))
+	
+        for j=0,n_elements(linv)-1 do begin
+          print,'aligning mosaic ',j
+          im=1.0*readfits(linv[j].file,hdr)
+	
+	  FXADDPAR,hdr,'EQUINOX','2000.','Equinox for ICRS celestial coord. system '
+	   
+	  missing=!values.F_nan
+                   
+	
+	  hastrom,im,hdr,imb,hdrb,hdrmos,MISSING=missing, INTERP = interp, $
+               ERRMSG = errmsg,CUBIC = cubic, DEGREE = Degree, NGRID = Ngrid
+          cov_cube[j].hdr=hdrb
+          cov_cube[j].im=imb
+          
+        endfor
+
+        if (Tint[iTint] eq 0.4) then shortlong='_short'
+        if (Tint[iTint] eq 10.4) then shortlong='_long'
+
+        outfile=work_directory+'joined_IRAC_mosaics/cubes/'+field+'_'+bands[iband]+$
+                  '_cov_cube'+shortlong+'.dat'
+        save,cov_cube,filename=outfile
+        print,'wrote: ',outfile
+
+    endfor
+    endfor
+    
+    
+    
+    
+    
+  endif
+
+  ;; Then, we join them into one "stacked" image
+  ;; THIS MUST BE IMPROVED, now we do a simple median filter, but we want
+  ;; a sigma-clipping and weighted average!
+
+
+  for iband=0,n_elements(bands)-1 do begin
+    for iTint=0,n_elements(Tint)-1 do begin
+      if (Tint[iTint] eq 0.4) then shortlong='_short'
+      if (Tint[iTint] eq 10.4) then shortlong='_long'
+      infile=work_directory+'joined_IRAC_mosaics/cubes/'+field+'_'+bands[iband]+$
+            '_cube'+shortlong+'.dat'
+      restore,infile
+    
+      infile=work_directory+'joined_IRAC_mosaics/cubes/'+field+'_'+bands[iband]+$
+            '_unc_cube'+shortlong+'.dat'
+      restore,infile
+       infile=work_directory+'joined_IRAC_mosaics/cubes/'+field+'_'+bands[iband]+$
+            '_cov_cube'+shortlong+'.dat'
+      restore,infile
+
+
+
+
+
+      if not keyword_set(individual_mosaics) then begin
+;;      first, determine the pixel levels in the 1st frame that are "genuine" background
+;;      We will align all images to the first mosaic.
+;;      IT IS LIKELY THAT THE FINAL RESULT CONTAINS AN ADDITIVE BIAS, I.E. THE
+;;      TRUE BACKGROUND LEVEL IS DIFFERENT FROM WHAT IS SEEN IN THE
+;;      IMAGE. HOWEVER, WHEN PHOTOMETRY ON POINT SOURCES IS PERFORMED, THIS
+;;      SHOULD DROP OUT (background subtraction)!
+
+
+        im0=cube[0].im
+        ix=where(finite(im0) eq 1)
+        order=sort(im0[ix]) & pixelvector=im0[ix[order]]
+        n1=round(0.3*n_elements(pixelvector)) & n2=round(0.7*n_elements(pixelvector))
+        lowercut=pixelvector[n1] & uppercut=pixelvector[n2]
+        med0=pixelvector[n1:n2]
+        nx=n_elements(im0[*,0])
+        ny=n_elements(im0[0,*])
+
+        for imosaic=0,n_elements(cube)-1 do begin
+        imi=cube[imosaic].im
+        ix=where(finite(imi) eq 1)
+        order=sort(imi[ix]) & pixelvector=imi[ix[order]]
+        n1=round(0.3*n_elements(pixelvector)) & n2=round(0.7*n_elements(pixelvector))
+      ; lowercut=pixelvector[n1] & uppercut=pixelvector[n2]
+      ; ix=where((im0 ge lowercut) and (im0 le uppercut) and (finite(imi) eq 1))
+            
+	diff=med0-pixelvector[n1:n2]
+ 
+ 
+;          lindx=jm_cut_indx(ix,100)
+;          xi=lindx mod nx
+;          yi=floor(lindx/nx)
+;          plot,xi,yi,xstyle=2,ystyle=2,psym=3
+
+;         greys=intarr(n_elements(ratiosb))
+;         for i=0l,n_elements(ratiosb)-1 do begin
+;           greys[i]=round(255.*(ratiosb[i]-0.9)/0.2)
+;           plots,ixb[i],iyb[i],psym=3,color=rgb(greys[i],greys[i],greys[i])
+;         endfor
+
+          offset=median(diff)
+          print,'offset applied to mosaic ',imosaic,': ',offset
+
+          cube[imosaic].im=cube[imosaic].im+offset ;; apply additive "bias" to align background 
+                                                   ;; with the first mosaic
+						   
+						   
+						   
+						   
+						   
+						   
+;          order=sort(diff)
+;          plot,diff[order],title='mosaic '+strtrim(string(imosaic)),$
+;               yrange=offset+[-30,30],charsize=1.8
+;          aa=''
+;          read,aa
+        endfor      
+
+        print,'running a 3-sigma median filter across the different mosaics, making the final combined image ...'
+        
+
+         	
+	sigma_filter_median,cube.im,stack,cube.im,Nsigma=3.0,Times=2
+	
+
+  outfile=work_directory+'joined_IRAC_mosaics/'+field+'_'+bands[iband]+'_3sigma_median'+shortlong+'.fits'
+        writefits,outfile,stack,cube[0].hdr
+        print,'wrote: ',outfile	
+
+
+
+
+	
+
+;;;;;;;;;;;;;;;;;;;;;;;calculate weighted average for each pixel;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	
+        ;numerator  =fltarr(nx,ny)
+ 	;denominator=fltarr(nx,ny)
+	;coverage   =fltarr(nx,ny)
+	;for imosaic=0,n_elements(cube)-1 do begin
+	  ; imi=1d0*cube[imosaic].im
+	   ;weight=1d0/(unc_cube[imosaic].im)^2.0
+	   ;ix=where(finite(imi) eq 0)    
+	   ;weight[ix]=0.d0
+	   ;cube[imosaic].im[ix]=0d0
+	   ;cov_cube[imosaic].im[ix]=0.0
+	
+	   ;coverage=coverage+cov_cube[imosaic].im
+	   ;numerator   = numerator  + cube[imosaic].im*weight	   
+	   ;denominator = denominator+ weight
+    	;endfor	
+	
+        ;weighted_average=numerator/denominator
+	;coverage=coverage*Tint[iTint]
+
+sigma_filter_mean,cube.im,unc_cube.im,cov_cube.im,weighted_average,coverage,Tint[iTint]
+	
+	
+	
+	
+	
+		 
+	
+
+    print,'running a weighted mean across the different mosaics, making the final combined image ...'
+        
+
+	
+        outfile=work_directory+'joined_IRAC_mosaics/'+field+'_'+bands[iband]+'_weighted_average'+shortlong+'.fits'
+        writefits,outfile,weighted_average,cube[0].hdr
+        print,'wrote: ',outfile	
+	
+        
+	
+	
+    print,'making the coverage image ...'
+
+	outfile=work_directory+'joined_IRAC_mosaics/'+field+'_'+bands[iband]+'_coverage'+shortlong+'.fits'
+        writefits,outfile,coverage,cube[0].hdr
+        print,'wrote: ',outfile	
+		
+	
+
+      endif
+
+      if keyword_set(individual_mosaics) then begin
+        pairs=jm_getpairs(cube.hdr)
+        for ipairs=0,n_elements(pairs)-1 do begin
+          im1=cube[pairs[ipairs].obs1].im
+          im2=cube[pairs[ipairs].obs2].im
+          lcube=[[[im1]],[[im2]]]
+	  stack=median(lcube,dimension=3)
+
+           outfile=work_directory+'joined_IRAC_mosaics/individual_mosaics/'+$
+             field+'_'+bands[iband]+'_stack'+strtrim(string(ipairs),2)+shortlong+'.fits'
+           writefits,outfile,stack,cube[pairs[ipairs].obs1].hdr
+           print,'wrote: ',outfile 
+        endfor
+      endif
+
+    endfor
+  endfor
+end

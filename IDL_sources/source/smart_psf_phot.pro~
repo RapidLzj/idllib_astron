@@ -1,0 +1,633 @@
+function psf_ssf_remove_multiple,res_x,res_y,res_psf_flux,res_psf_x_sigma,res_psf_y_sigma,$
+                 res_psf_flux_sigma,res_psf_correlation,res_aper_flux,res_aper_errflux,nearest_edge
+  
+  print,'number of stars found: ',n_elements(res_x)
+
+  same_source_radius=1.0 ;; pixels
+
+  GROUP_roy, res_X, res_Y, same_source_radius, NGROUP
+
+  numberofgroups=max(ngroup)
+  one={x:0.,y:0.,n:0,psf_flux:0.,psf_x_sigma:0.,psf_y_sigma:0.,psf_flux_sigma:0.,psf_correlation:0.,aper_flux:0.,aper_errflux:0.,nearest_edge:0.}
+  
+  
+  new=replicate(one,numberofgroups)
+  i=0l
+  while (i le (n_elements(new)-1)) do begin
+    ix=where(ngroup eq i)
+    if (ix[0] eq -1) then new[i].n=0 else $
+    if (n_elements(ix) eq 1) then begin ;; only one star in this group
+      new[i].x=res_x[ix] & new[i].y=res_y[ix] & new[i].psf_flux=res_psf_flux[ix]
+      new[i].n=1
+      new[i].psf_x_sigma=res_psf_x_sigma[ix]
+      new[i].psf_y_sigma=res_psf_y_sigma[ix]
+      new[i].psf_flux_sigma=res_psf_flux_sigma[ix]
+      new[i].psf_correlation=res_psf_correlation[ix]
+      new[i].aper_flux=res_aper_flux[ix]
+      new[i].aper_errflux=res_aper_errflux[ix]
+      new[i].nearest_edge=nearest_edge[ix]
+    endif else begin ;; multiple stars in this group
+      ix_max=reverse(sort(nearest_edge[ix])) 
+      
+      new[i].x=res_x[ix[ix_max[0]]] & new[i].y=res_y[ix[ix_max[0]]] & new[i].psf_flux=res_psf_flux[ix[ix_max[0]]]
+      new[i].n=n_elements(ix)
+      new[i].psf_x_sigma=res_psf_x_sigma[ix[ix_max[0]]]
+      new[i].psf_y_sigma=res_psf_y_sigma[ix[ix_max[0]]]
+      new[i].psf_flux_sigma=res_psf_flux_sigma[ix[ix_max[0]]]
+      new[i].psf_correlation=res_psf_correlation[ix[ix_max[0]]]
+      new[i].aper_flux=res_aper_flux[ix[ix_max[0]]]
+      new[i].aper_errflux=res_aper_errflux[ix[ix_max[0]]]
+       new[i].nearest_edge=nearest_edge[ix[ix_max[0]]]
+   
+    
+    
+    endelse
+    i=i+1
+  endwhile
+
+help,new
+  ix=where(new.n ge 1) & new=new[ix]
+help,new
+
+  return,new
+end
+
+
+
+
+
+function psf_ssf_determine_sigma,im,plotm=plotm
+  ix=where(finite(im) eq 1)
+  
+  if ix[0] eq -1 then begin
+   return,-1
+  endif
+  
+  im=im[ix]
+  order=sort(im)
+  
+  
+  y=im[order]
+;  ix=where(y gt 0.)
+;  if (ix[0] ne -1) then y=y[ix] else return,-1.
+
+  xminlimit=0.15
+  xmaxlimit=0.85
+
+  xminlimit=xminlimit*n_elements(y)
+  xmaxlimit=xmaxlimit*n_elements(y)
+
+  xx=round([xminlimit,xmaxlimit])
+  if (n_elements(y) gt 100) then sig=stddev(y[xx[0]:xx[1]],/double) else sig=-1.
+
+  if keyword_set(plotm) then begin
+    yrange=[-40,60]*median(y)
+    if (yrange[0] gt 0) then yrange=-yrange
+    plot,y,yrange=yrange,title='standard deviation: '+string(sig)
+    oplot,xminlimit*[1,1],[-1e10,1e10],line=2
+    oplot,xmaxlimit*[1,1],[-1e10,1e10],line=2
+    aa=''
+    read,aa
+  endif
+
+  return,sig
+end
+
+function psf_ssf_get_sigmas,im,subims
+  sigmas=fltarr(n_elements(subims))
+  i=0l
+  while (i le n_elements(subims)-1) do begin
+    lim=im[subims[i].x1:subims[i].x2,subims[i].y1:subims[i].y2]
+    sigmas[i]=psf_ssf_determine_sigma(lim)
+    i=i+1
+  endwhile
+  return,sigmas
+end
+
+pro psf_ssf_write_subims_regfile,subims,fitsname,buffer=buffer,subims_regfile=regname
+  a=strsplit(fitsname,'.fits',/reg,/ex)
+  regname=a[0]+'_psf_fitting_subims.reg'
+
+  if not keyword_set(buffer) then buffer=0
+
+  off=1. ;; offset to be added to x and y coordinates, typically 1.0 for stuff that has been extracted using idl, 0. for iraf/sextractor stuff.
+
+  openw,lun,regname,/get_lun
+  i=0l
+  while (i le (n_elements(subims)-1)) do begin
+
+    bsx=(subims[i].x2-subims[i].x1+1)
+    x0=(subims[i].x2+subims[i].x1)/2.
+    bsy=(subims[i].y2-subims[i].y1+1)
+    y0=(subims[i].y2+subims[i].y1)/2.
+
+    line='box('+strtrim(string(x0+off,format='(f10.1)'),2)+','+$
+                strtrim(string(y0+off,format='(f10.1)'),2)+','+$
+                strtrim(string(bsx-buffer*2,format='(f10.1)'),2)+','+$
+                strtrim(string(bsy-buffer*2,format='(f10.1)'),2)+') # color=red'
+    printf,lun,line
+
+    line='box('+strtrim(string(x0+off,format='(f10.1)'),2)+','+$
+                strtrim(string(y0+off,format='(f10.1)'),2)+','+$
+                strtrim(string(1,format='(f10.1)'),2)+','+$
+                strtrim(string(1,format='(f10.1)'),2)+') # color=red text={'+$
+                strtrim(string(i),2)+'}'               
+    printf,lun,line
+    i=i+1
+  endwhile
+  close,lun
+  free_lun,lun
+  print,'wrote: ',regname
+end
+
+function psf_ssf_get_subims,nx,ny,boxsize,overlap
+;; purpose: to get the pixel ranges 
+  
+  length=0
+  x1=[0]
+  x2=[boxsize-1]
+  jx=1
+  while (length lt (nx-1)) do begin
+    x1=[x1,jx*(boxsize-overlap)-1]
+    x2=[x2,((jx+1)*boxsize-jx*overlap-2)<(nx-1)]
+    jx=jx+1
+    length=max(x2)
+  endwhile
+
+  length=0
+  y1=[0]
+  y2=[boxsize-1]
+  jy=1
+  while (length lt (ny-1)) do begin
+    y1=[y1,jy*(boxsize-overlap)-1]
+    y2=[y2,((jy+1)*boxsize-jy*overlap-2)<(ny-1)]
+    jy=jy+1
+    length=max(y2)
+  endwhile
+
+ print,'number of sub-frames in [x,y] direction: ['+strtrim(string(jx),2)+','+strtrim(string(jy),2)+']'
+ 
+  ntotal=1l*jx*jy
+  one={x1:0,x2:0,y1:0,y2:0}
+  res=replicate(one,ntotal)
+
+  print,'total number of sub-frames: '+strtrim(string(ntotal),2)
+
+  count=0l
+  for i=0,jx-1 do begin
+    for k=0,jy-1 do begin
+       res[count].x1=x1[i]
+       res[count].x2=x2[i]
+       res[count].y1=y1[k]
+       res[count].y2=y2[k]
+       count=count+1l
+    endfor
+  endfor
+  return,res
+end
+
+
+
+pro smart_psf_phot,field=field,band=band,first=first,iframe=iframe,$
+      plot_sig=plot_sig,display_regions=display_regions,$
+      work_directory=work_directory,$
+      shortlong=shortlong,infile=infile,newpsf=newpsf,$ 
+      ini_psf_fwhm=ini_psf_fwhm,psf_fitting_size=psf_fitting_size,$
+      newsigma=newsigma
+
+
+
+
+  psf_fitting_boxsize=200
+  psf_fitting_overlap=50
+  psf_fitting_buffer=20
+  psf_fitting_overlap=psf_fitting_overlap+2*psf_fitting_buffer
+
+
+
+  if not keyword_set(field) then field='L1641'
+  if not keyword_set(band) then band='3.6'
+  if not keyword_set(shortlong) then shortlong='long'
+  if not keyword_set(work_directory) then work_directory='/disk1/fang/SPITZER_DATA_PBCD/SPITZER_DATA/work_directory/'
+  if keyword_set(iframe) then plot_intermediate=1
+  if not keyword_set(ini_psf_fwhm) then ini_psf_fwhm=1.7
+  if not keyword_set(psf_fitting_size) then psf_fitting_size=13
+
+
+
+   
+  if not keyword_set(infile) then $
+  infile=work_directory+'joined_IRAC_mosaics/'+field+'_'+band+'_'+shortlong+'.fits'
+
+
+  im=readfits(infile,hdr)
+  nx=fix(sxpar(hdr,'NAXIS1')) & ny=fix(sxpar(hdr,'NAXIS2'))
+  psf_fitting_subims=psf_ssf_get_subims(nx,ny,psf_fitting_boxsize,psf_fitting_overlap) 
+
+  psf_ssf_write_subims_regfile,psf_fitting_subims,infile,buffer=psf_fitting_buffer,subims_regfile=subims_regfile
+
+ 
+ if band ne '24' then begin 
+  found_sources=work_directory+'joined_IRAC_mosaics/'+'found_sources/'+field+$
+                '_'+band+'_sources*_'+shortlong+'.dat'
+ file=file_search(found_sources) 
+
+ 
+ if n_elements(file) eq 0 then begin
+ print,'no files for stellar coordinates'
+ return
+ endif else begin
+ if n_elements(file) gt 1 then begin
+ print,'there are '+strtrim(string(n_elements(file)),2)+' files for selection:'
+ 
+ for i=0L,n_elements(file)-1L do begin
+ print,i+1	
+ print,file[0]
+ endfor
+ print,'Please select which one you want?'
+ nn=0
+ read,nn
+ nn=nn-1L
+ found_sources_coor=file[nn]
+ endif else begin
+ found_sources_coor=file[0]
+ endelse
+ endelse
+ 
+ endif else begin
+
+   fname=strsplit(infile,'.fits',/reg,/ex)
+   fname=strsplit(fname,work_directory+'joined_MIPS_mosaics',/reg,/ex)
+   outfile=work_directory+'joined_MIPS_mosaics/found_sources/'+fname+'_'+band+'_sources'
+   outfile=outfile+'_bs*'
+   outfile=outfile+'ov*'
+   outfile=outfile+'.dat'
+   file=file_search(outfile) 
+  
+
+
+; work_directory+'joined_MPIS_mosaics/'+'found_sources/'+field+'_'+band+'_sources*'+'_'+shortlong+'.dat' 
+ 
+ 
+ if n_elements(file) eq 0 then begin
+ print,'no files for stellar coordinates'
+ return
+ endif else begin
+ if n_elements(file) gt 1 then begin
+ print,'there are '+strtrim(string(n_elements(file)),2)+' files for selection:'
+ 
+ for i=0L,n_elements(file)-1L do begin
+ print,i+1	
+ print,file[0]
+ endfor
+ print,'Please select which one you want?'
+ nn=0
+ read,nn
+ nn=nn-1L
+ found_sources_coor=file[nn]
+ endif else begin
+ found_sources_coor=file[0]
+ endelse
+ endelse
+  
+ endelse
+ 
+ 
+ 
+ restore,found_sources_coor
+ 
+ 
+ 
+ 
+
+
+;;;;;;;;;;;;;;;;;;;;;; ;extracting empirical psf ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ ; AVGTYPE=1  ;using median to get psf
+ ; PSF_MODEL,'psf_3.6.txt','L1641_3.6_3sigma_median_long.fits',11,psf,AVGTYPE=AVGTYPE
+ 
+ ;psf_star_file=work_directory+'joined_IRAC_mosaics/psf/'+field+'_'+band+'_'+shortlong+'_psf_stars'
+  
+  if band ne '24' then  begin
+  psf_file=work_directory+'joined_IRAC_mosaics/psf/'+field+'_'+band+'_'+shortlong+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf.fits' 
+  
+   endif else begin
+  ;psf_file=strsplit(infile,'.fits',/reg,/ex)
+  ;psf_file=psf_file+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf.fits' 
+   
+     fname=strsplit(infile,'.fits',/reg,/ex)
+   fname=strsplit(fname,work_directory+'joined_MIPS_mosaics',/reg,/ex)
+  psf_file=work_directory+'joined_MIPS_mosaics/psf/'+fname+'_'+band+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf.fits' 
+   
+    endelse
+
+
+loop1: if keyword_set(newpsf) then begin
+
+   
+     if band ne '24' then  begin
+   psf_star_file=work_directory+'joined_IRAC_mosaics/psf/'+field+'_'+band+'_'+shortlong+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf_star'
+  endif  else begin
+ 
+ 
+ ; psf_star_file=strsplit(infile,'.fits',/reg,/ex)
+ ; psf_star_file=psf_star_file+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf_star'
+ 
+  fname=strsplit(infile,'.fits',/reg,/ex)
+   fname=strsplit(fname,work_directory+'joined_MIPS_mosaics',/reg,/ex)
+  psf_star_file=work_directory+'joined_MIPS_mosaics/psf/'+fname+'_'+band+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf_star'
+ 
+    endelse
+   
+    
+ ;  psf_star_file=work_directory+'joined_IRAC_mosaics/psf/'+field+'_'+band+'_'+shortlong+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf_star'
+
+
+  
+  
+;;;;;;;;;;;;;;;;extract psf star from GLIMPS survey;;;;;;;;;;;;;;;;;;;;;;;;;;
+ if band eq '3.6' then psf_im=readfits('/home/fang/disk2/PISMIS24/image/GLM1_psf.fits')
+ if band eq '4.5' then psf_im=readfits('/home/fang/disk2/PISMIS24/image/GLM2_psf.fits') 
+ if band eq '5.8' then psf_im=readfits('/home/fang/disk2/PISMIS24/image/GLM3_psf.fits')
+ if band eq '8.0' then psf_im=readfits('/home/fang/disk2/PISMIS24/image/GLM4_psf.fits')
+ 
+ 
+
+
+  automatic_psf_extract,im,sources,ini_psf_fwhm,psf_fitting_size,psf_star_file=psf_star_file,psf
+ fits_write,psf_file,psf
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+ endif else begin
+ if (strlen(file_search(psf_file)) ne 0) then  psf=readfits(psf_file) else begin
+ print,'no psf image can be used to read!'
+ print,'extracting the psf from the image!'
+ newpsf=1
+ goto,loop1
+ endelse
+ endelse
+ 
+ 
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;estimating sigma for each subimage;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+ 
+if band ne '24' then  begin
+ savefile=work_directory+'joined_IRAC_mosaics/sigmas/'+field+'_'+band+'_'+shortlong+$
+    '_bs'+strtrim(string(psf_fitting_boxsize),2)+'ov'+strtrim(string(psf_fitting_overlap),2)+'_sigmas_psf_fitting.dat'
+endif else begin
+fname=strsplit(infile,'.fits',/reg,/ex)
+fname=strsplit(fname,work_directory+'joined_MIPS_mosaics',/reg,/ex)
+savefile=work_directory+'joined_MIPS_mosaics/sigmas/'+fname+'_bs'+strtrim(string(psf_fitting_boxsize),2)+$
+          'ov'+strtrim(string(psf_fitting_overlap),2)+'_sigmas_psf_fitting.dat'
+
+endelse
+  
+loop2:  if keyword_set(newsigma) then begin
+ sigmas=psf_ssf_get_sigmas(im,psf_fitting_subims)
+ save,sigmas,filename=savefile
+ endif else begin
+ 
+  if (strlen(file_search(savefile)) ne 0) then  restore,savefile else begin
+      print,'  ERROR, background standard deviations of subfields have'
+      print,'  not yet been determined. ';Please run'
+     ; print,"smart_source_finder,band='"+band+"',/first"
+      print,'estimating background standard deviations of subfields again!'
+      newsigma=1
+     goto,loop2
+ endelse
+ 
+ 
+ 
+ 
+ 
+ endelse 
+
+
+;;;;;;;;;;;making psf fitting for stars in each subimage;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+ psf_fwhm=fwhm(psf)
+ im=readfits(infile,hdr)
+
+ 
+ 
+ xcoor   =sources.x
+ ycoor   =sources.y
+ 
+   skyrad=[3,7]
+    apr=[3.0]
+    badpix=[-1000000d0,1000000d0]
+    phpadu=1.0
+    
+    if band eq '24' then begin
+    skyrad=[4,10]
+    apr=[3]
+    badpix=[-1000000d0,1000000d0]
+    phpadu=1.0
+    endif
+    
+ 
+    
+aper,im,xcoor,ycoor,found_f0,err_flux,sky,skyerr,phpadu,apr,skyrad,badpix,/flux,/silent
+ 
+
+
+
+ if keyword_set(iframe) then firstlast=[iframe,iframe] else  firstlast=[0,n_elements(psf_fitting_subims)-1]
+ 
+ res_x=0. & res_y=0.   & res_psf_flux=0. &res_psf_x_sigma=0. &res_psf_y_sigma=0. &res_psf_flux_sigma=0. & res_psf_correlation=0. 
+ 
+ res_aper_flux=0. &res_aper_errflux=0. 
+ 
+ res_iframe=-1
+ nearest_edge=0
+ res_subfields=[-1,-1,-1,-1]
+ 
+
+
+
+ for i=firstlast[0],firstlast[1] do begin
+
+ print,'doing psf-fitting photometry toward subframe '+strtrim(string(i),2)+' of '+$
+      strtrim(string(firstlast[1]-firstlast[0]),2)
+
+
+ if sigmas[i] ne -1 then begin
+ 
+ threshold=[2.0] 
+ noise_std=sigmas[i]
+ min_correlation=0.0
+ back_box=9*psf_fwhm
+ niter=3
+ correl_mag=2
+  
+  
+image=im[psf_fitting_subims[i].x1:psf_fitting_subims[i].x2,psf_fitting_subims[i].y1:psf_fitting_subims[i].y2]
+
+
+ix=where(xcoor ge psf_fitting_subims[i].x1 and xcoor le psf_fitting_subims[i].x2 $
+         and ycoor ge psf_fitting_subims[i].y1 and ycoor le psf_fitting_subims[i].y2)
+if ix[0] ne -1 then begin
+
+
+initial_x =xcoor[ix]-psf_fitting_subims[i].x1    
+initial_y =ycoor[ix]-psf_fitting_subims[i].y1
+initial_f0=found_f0[ix]  
+ 
+ix=reverse(sort(initial_f0)) 
+initial_x  =initial_x[ix]  
+initial_y  =initial_y[ix]
+initial_f0 =initial_f0[ix]
+
+
+smart_starfinder,image,initial_x,initial_y,initial_f0,psf, BACK_BOX = back_box, $
+ 	               threshold, /REL_THRESHOLD,/PRE_SMOOTH,$
+		       /sky_median,NOISE_STD = noise_std, min_correlation, $
+	               CORREL_MAG = correl_mag, INTERP_TYPE = 'I', $
+	               DEBLEND = deblend, N_ITER = niter, $
+	               x, y, psf_flux, sx, sy, sf, c, STARS = stars
+  
+  
+    ;im=readfits(infile,hdr)
+    
+;  ix=where(x ge 0 and y ge 0)  
+
+;  x=x[ix]
+;  y=y[ix]
+;  psf_flux=psf_flux[ix]
+;  sx=sx[ix]
+;  sy=sy[ix] 
+;  c=c[ix]  
+    
+    skyrad=[3,7]
+    apr=[3.0]
+    badpix=[-1000000d0,1000000d0]
+    phpadu=1.0
+    
+    if band eq '24' then begin
+    skyrad=[10,15]
+    apr=[10]
+    badpix=[-1000000d0,10000000d0]
+    phpadu=1.0
+    endif
+
+
+ixx=where(x eq 0 and y eq 0)
+if ixx[0] ne -1 then begin
+  x[ixx]=initial_x[ixx]
+  y[ixx]=initial_y[ixx]
+endif 
+    
+aper,image,x,y,aper_flux,err_flux,sky,skyerr,phpadu,apr,skyrad,badpix,/flux,/silent
+
+    
+if ((x[0] ne 0.) and (y[0] ne 0.)) then ndetect=n_elements(x) else  ndetect=0   
+
+if ndetect ge 1 then begin
+
+
+MIN_EDGE=fltarr(ndetect)
+x=x+psf_fitting_subims[i].x1 & y=y+psf_fitting_subims[i].y1
+
+
+
+for istar=0LL,ndetect-1LL do begin
+min_edge[istar]=min([min([x[istar]-psf_fitting_subims[i].x1,psf_fitting_subims[i].x2-x[istar]]),$
+                min([y[istar]-psf_fitting_subims[i].y1,psf_fitting_subims[i].y2-y[istar]])])
+endfor
+
+
+res_x=[res_x,x] & res_y=[res_y,y] & res_psf_flux=[res_psf_flux,psf_flux]
+res_psf_x_sigma=[res_psf_x_sigma,sx] &res_psf_y_sigma=[res_psf_y_sigma,sy]
+res_psf_flux_sigma=[res_psf_flux_sigma,sf] & res_psf_correlation=[res_psf_correlation,c]
+res_aper_flux=[res_aper_flux,reform(aper_flux)] & res_aper_errflux=[res_aper_errflux,reform(err_flux)] 
+nearest_edge=[nearest_edge,min_edge]
+
+endif
+endif 
+
+
+endif
+endfor
+
+
+nx=n_elements(res_x)
+
+res_x=res_x[1:nx-1] & res_y=res_y[1:nx-1] & res_psf_flux=res_psf_flux[1:nx-1]
+res_psf_x_sigma=res_psf_x_sigma[1:nx-1] &res_psf_y_sigma=res_psf_y_sigma[1:nx-1]
+res_psf_flux_sigma=res_psf_flux_sigma[1:nx-1] & res_psf_correlation=res_psf_correlation[1:nx-1]
+res_aper_flux=res_aper_flux[1:nx-1] &res_aper_errflux=res_aper_errflux[1:nx-1] 
+nearest_edge=nearest_edge[1:nx-1]
+psf_fitting_sources=psf_ssf_remove_multiple(res_x,res_y,res_psf_flux,res_psf_x_sigma,res_psf_y_sigma,res_psf_flux_sigma,res_psf_correlation,res_aper_flux,res_aper_errflux,nearest_edge)
+
+if band ne '24' then begin
+
+sources_file=work_directory+'joined_IRAC_mosaics/psf/'+field+'_'+band+'_'+shortlong+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf_fitting_sources.dat'
+
+endif else begin
+
+  fname=strsplit(infile,'.fits',/reg,/ex)
+   fname=strsplit(fname,work_directory+'joined_MIPS_mosaics',/reg,/ex)
+  sources_file=work_directory+'joined_MIPS_mosaics/psf/'+fname+'_'+band+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf_fitting_sources.dat'
+
+;work_directory+'joined_IRAC_mosaics/psf/'+field+'_'+band+'_'+shortlong+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf_fitting_sources.dat'
+endelse
+
+
+save,psf_fitting_sources,filename=sources_file
+print,'wrote:'+sources_file
+
+
+if band ne '24' then begin
+
+infile=work_directory+'joined_IRAC_mosaics/psf/'+field+'_'+band+'_'+shortlong+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf_fitting_sources'
+
+endif else begin
+
+
+  fname=strsplit(infile,'.fits',/reg,/ex)
+   fname=strsplit(fname,work_directory+'joined_MIPS_mosaics',/reg,/ex)
+  infile=work_directory+'joined_MIPS_mosaics/psf/'+fname+'_'+band+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf_fitting_sources'
+
+
+;work_directory+'joined_IRAC_mosaics/psf/'+field+'_'+band+'_'+shortlong+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf_fitting_sources.dat'
+endelse
+
+
+
+
+;infile=work_directory+'joined_IRAC_mosaics/psf/'+field+'_'+band+'_'+shortlong+'_ps'+strtrim(string(psf_fitting_size),2)+'_psf_fitting_sources'
+
+
+
+ssf_write_region_file,psf_fitting_sources,infile,regname=regname,boxsize=psf_fitting_boxsize,overlap=psf_fitting_overlap,buffer=psf_fitting_buffer
+
+
+
+
+end
+
+;pro smart_mips_psf_phot,field,band
+;if field eq 'L1641' then begin
+;infile=strarr(3)
+;infile[0]='/home/fang/disk1/fang/SPITZER_DATA_PBCD/SPITZER_DATA/work_directory/joined_MIPS_mosaics/L1641_1.fits'
+;infile[1]='/home/fang/disk1/fang/SPITZER_DATA_PBCD/SPITZER_DATA/work_directory/joined_MIPS_mosaics/L1641_2.fits'
+;infile[2]='/home/fang/disk1/fang/SPITZER_DATA_PBCD/SPITZER_DATA/work_directory/joined_MIPS_mosaics/L1641_3.fits'
+;endif
+
+;if field eq 'L1630' then begin
+;infile=strarr(2)
+;infile[0]='/home/fang/disk1/fang/SPITZER_DATA_PBCD/SPITZER_DATA/work_directory/joined_MIPS_mosaics/L1630_1.fits'
+;infile[1]='/home/fang/disk1/fang/SPITZER_DATA_PBCD/SPITZER_DATA/work_directory/joined_MIPS_mosaics/L1630_2.fits'
+;endif
+
+;for i=0,n_elements(infile)-1 do begin
+
+;smart_psf_phot,field=field,band='24',infile=infile[1],ini_psf_fwhm=2.9,psf_fitting_size=15,/newpsf
+;endfor
+
+;end
+
+
+
