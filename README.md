@@ -1,2 +1,6 @@
-# idllib_astron
-IDL astron library, some public, some writen by me
+本程序包程序来自两个方面：
+
+astron, coyote, idlutils: 此包等来自其原始作者。此处保留仅为了在不同主机之间维护方便，不改变其原始内容。
+
+lzj: 此包内代码为本人编写，或者改写现有库。
+
