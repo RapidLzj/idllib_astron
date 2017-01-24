@@ -4,10 +4,12 @@ pro r_outcat, cat, lun, ixfield, fmt
 
   ; list all fields
   tags = ['SN', tag_names(cat[0])]
-  fmtt = fmt
+  fmtt = fmt ; format for header tag
   for gg = 0, nix-1 do begin
-    printf, lun, format='("#",I-2,2X,A-30,A-6)', gg+1, tags[ixfield[gg]+1], fmt[gg]
-    fmtt[gg] = '(2x,A' + strn(fix(strmid(fmt[gg], 1))) + ',$)'
+    printf, lun, format='("#",I-2,2X,A-30,A-15)', gg+1, tags[ixfield[gg]+1], fmt[gg]
+    ;fmtt[gg] = '(2x,A' + strn(fix(strmid(fmt[gg], 1))) + ',$)' ; judge width of field
+    sample = string(cat[0].(ixfield[gg]), format='('+fmt[gg]+')')
+    fmtt[gg] = '(2x,A'+strn(strlen(sample))+',$)' ;20161129: judge length by sample
   endfor
   fmtt[0] = '(1x' + strmid(fmtt[0], 3)
 

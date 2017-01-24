@@ -30,18 +30,19 @@ function r_match, u1, v1, mag1, u2, v2, mag2, $
 
   ; six: sort by v1, rix: reverse index from six back to original order
   six1 = sort(v1) & six2 = sort(v2)
-  rix1 = lonarr(n1) & rix1[six1] = lindgen(n1) & rix2 = lonarr(n2) & rix2[six2] = lindgen(n2)
+  ;rix1 = lonarr(n1) & rix1[six1] = lindgen(n1) & rix2 = lonarr(n2) & rix2[six2] = lindgen(n2)
   u1s = u1[six1] & v1s = v1[six1] & mag1s = mag1[six1]
   u2s = u2[six2] & v2s = v2[six2] & mag2s = mag2[six2]
 
   if xy then uscale = 1.0 else uscale = cos(median(v1) * !pi / 180.0)
   ; from top, walk down. for [p1], [p2f:p2t] is dec near stars, find match in small range
   p2f = 0L & p2t = 0L
+  ;openw, luntest, '~/Desktop/testidl.txt', /get_lun
+  ;printf, luntest, n1, n2, maxdis * 3600.0,format='(I4," x ",I4," < ",F5.1)'
   for p1 = 0L, n1-1 do begin
     ; p2f walk down to the first item gt [p1]-dis, and p2t to first item gt [p1]+dis
     while p2f lt n2 && v2s[p2f] lt v1s[p1]-maxdis do p2f++
     while p2t lt n2 && v2s[p2t] le v1s[p1]+maxdis do p2t++
-    ;;debug print, p1, p2f, p2t, v1s[p1],v2s[p2f:p2t-1]
     ; exit when p2f runout
     if p2f ge n2 then break
     ; p1 skip when no near star
@@ -51,6 +52,10 @@ function r_match, u1, v1, mag1, u2, v2, mag2, $
     ;;debug print, dis
     ix2 = where(dis le maxdis, nix2)
     if nix2 gt 0 then begin
+      ;for i = 0, nix2-1 do printf, luntest, $
+      ;  p1, p2f+ix2[i], dis[ix2[i]]*3600.0, $
+      ;  u1s[p1]-88.266583, v1s[p1]-16.018056, u2s[p2f+ix2[i]]-88.266583, v2s[p2f+ix2[i]]-16.018056, $
+      ;  format='(I4, 2x, I4, 2x, F+6.2, 4(2x, F+7.4))'
       id1 = [id1, replicate(p1, nix2)]
       id2 = [id2, p2f + ix2]
       dis12 = [dis12, dis[ix2]]
@@ -58,13 +63,13 @@ function r_match, u1, v1, mag1, u2, v2, mag2, $
     endif ; nix2
   endfor
   ;;debug print, nmatch
+  ;close, luntest
 
   ; check match limit and remove leading virtual item
   if nmatch lt matchlimit then return, -1
   id1 = id1[1:*] & id2 = id2[1:*] & dis12 = dis12[1:*]
 
   ; return id from sorted to original
-  ;id1 = rix1[id1] & id2 = rix2[id2]
   id1 = six1[id1] & id2 = six2[id2]
 
   if nmatch gt 1 and ~ multimatch then begin
